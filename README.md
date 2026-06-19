@@ -1,3 +1,22 @@
+TASKS IMPELEMENTED : 
+
+
+<img width="662" height="397" alt="image" src="https://github.com/user-attachments/assets/f94331f7-45f8-449a-bc90-9bb128c04a14" />
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Signals Challenge (Node.js + Fastify)
 
 ![Tests](https://img.shields.io/badge/Tests-16%2F16_Passing-brightgreen?style=for-the-badge)
