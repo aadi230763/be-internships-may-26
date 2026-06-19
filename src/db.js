@@ -6,6 +6,9 @@ const dbPath = process.env.DATABASE_URL || './data/signals.db';
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 const db = new Database(dbPath);
 
+// Enable WAL mode for better concurrent read performance
+db.pragma('journal_mode = WAL');
+
 // schema
 db.exec(`
 CREATE TABLE IF NOT EXISTS signals (
@@ -37,6 +40,24 @@ export function insertSignal(userId, type, payload, idemKey, nowMs) {
   return stmt.run(userId, type, String(payload), idemKey || null, nowMs);
 }
 
+/**
+ * Atomic idempotent insert using INSERT OR IGNORE.
+ *
+ * Leverages the UNIQUE constraint on idempotency_key:
+ * - If the key doesn't exist → inserts and returns { changes: 1, lastInsertRowid }.
+ * - If the key exists → silently ignores and returns { changes: 0 }.
+ *
+ * No race condition possible because the constraint check + insert is a
+ * single atomic SQLite statement.
+ */
+export function insertSignalAtomic(userId, type, payload, idemKey, nowMs) {
+  maybeFail();
+  const stmt = db.prepare(
+    'INSERT OR IGNORE INTO signals (user_id, type, payload, idempotency_key, created_at) VALUES (?,?,?,?,?)'
+  );
+  return stmt.run(userId, type, String(payload), idemKey || null, nowMs);
+}
+
 export function getByIdemKey(idemKey) {
   maybeFail();
   const stmt = db.prepare(
@@ -51,4 +72,11 @@ export function listSignals(userId, limit) {
     'SELECT id, user_id as userId, type, payload, idempotency_key as idempotencyKey, created_at as createdAt FROM signals WHERE user_id = ? ORDER BY created_at DESC LIMIT ?'
   );
   return stmt.all(userId, limit);
+}
+
+/**
+ * Close the database connection (used in tests for cleanup).
+ */
+export function closeDb() {
+  db.close();
 }
