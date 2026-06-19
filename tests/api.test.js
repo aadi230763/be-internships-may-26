@@ -126,10 +126,9 @@ test('GET /v1/signals returns signals for user', async () => {
     }
 
     // Query them
-    const { statusCode, body } = await httpGet(
-      `${BASE}/v1/signals?userId=list-user&limit=10`,
-      { 'x-api-key': 'k' }
-    );
+    const { statusCode, body } = await httpGet(`${BASE}/v1/signals?userId=list-user&limit=10`, {
+      'x-api-key': 'k',
+    });
 
     assert.equal(statusCode, 200);
     assert.ok(Array.isArray(body.items), 'items should be an array');
@@ -167,10 +166,9 @@ test('GET /v1/signals respects limit parameter', async () => {
     }
 
     // Query with limit=2
-    const { statusCode, body } = await httpGet(
-      `${BASE}/v1/signals?userId=limit-user&limit=2`,
-      { 'x-api-key': 'k' }
-    );
+    const { statusCode, body } = await httpGet(`${BASE}/v1/signals?userId=limit-user&limit=2`, {
+      'x-api-key': 'k',
+    });
 
     assert.equal(statusCode, 200);
     assert.equal(body.items.length, 2, 'Should only return 2 items');

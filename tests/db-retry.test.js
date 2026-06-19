@@ -54,7 +54,6 @@ test('db retry: service recovers from transient DB failures', async () => {
 
   try {
     let successes = 0;
-    let failures503 = 0;
     const total = 20;
 
     for (let i = 0; i < total; i++) {
@@ -63,7 +62,6 @@ test('db retry: service recovers from transient DB failures', async () => {
         body: { userId: 'retry-user', type: 'note', payload: String(i) },
       });
       if (statusCode === 200) successes++;
-      else if (statusCode === 503) failures503++;
     }
 
     // With 30% fail rate and 3 retries, most requests should succeed

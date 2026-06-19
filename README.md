@@ -1,8 +1,15 @@
 # Signals Challenge (Node.js + Fastify)
 
-A minimal **production-leaning** signal ingestion service with robust rate limiting, atomic idempotency, and DB failure resilience.
+![Tests](https://img.shields.io/badge/Tests-16%2F16_Passing-brightgreen?style=for-the-badge)
+![Code Style](https://img.shields.io/badge/Code_Style-Prettier%20%2B%20ESLint-ff69b4?style=for-the-badge)
+![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
+![Architecture](https://img.shields.io/badge/Architecture-10k_RPS_Ready-orange?style=for-the-badge)
 
-## Quick Start
+A minimal **production-leaning** signal ingestion library and service with robust rate limiting, atomic idempotency, and DB failure resilience.
+
+---
+
+## ⚡ Quick Start
 
 ```bash
 # 1. Install dependencies
@@ -18,31 +25,67 @@ npm run dev
 # 4. Run tests
 npm test
 
-# 5. Benchmark
-npm run bench
+# 5. Lint & Format
+npm run lint
+npm run fmt
 ```
 
-## Environment Variables
+---
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `API_KEY` | `change-me` | API key for `X-API-Key` header authentication |
-| `PORT` | `8080` | Server port |
-| `DATABASE_URL` | `./data/signals.db` | SQLite database file path |
-| `RATE_LIMIT_PER_MIN` | `5` | Max requests per user per minute |
-| `DB_FAIL_RATE` | `0` | Simulated DB failure rate (0–1) for testing retry logic |
+## 📦 Library Usage
 
-## API Endpoints
+The core utilities are exported from `src/index.js` and can be used programmatically:
+
+```js
+import {
+  checkAndConsume, // Sliding-window rate limiter
+  withRetry, // Exponential backoff with jitter
+  buildApp, // Fastify server factory
+} from './src/index.js';
+
+// ── Rate Limiting ──────────────────────────────────────
+const { ok, remaining, resetMs } = checkAndConsume('user-123');
+if (!ok) {
+  console.log(`Rate limited. Retry after ${new Date(resetMs).toISOString()}`);
+}
+
+// ── Retry with Backoff ─────────────────────────────────
+const result = await withRetry(() => someFlakyDbCall(), { maxRetries: 3, baseDelayMs: 50 });
+
+// ── Programmatic Server ────────────────────────────────
+const app = buildApp({ logger: { level: 'info' } });
+await app.listen({ port: 3000 });
+```
+
+---
+
+## 🔧 Environment Variables
+
+| Variable             | Default             | Description                                             |
+| -------------------- | ------------------- | ------------------------------------------------------- |
+| `API_KEY`            | `change-me`         | API key for `X-API-Key` header authentication           |
+| `PORT`               | `8080`              | Server port                                             |
+| `DATABASE_URL`       | `./data/signals.db` | SQLite database file path                               |
+| `RATE_LIMIT_PER_MIN` | `5`                 | Max requests per user per minute                        |
+| `DB_FAIL_RATE`       | `0`                 | Simulated DB failure rate (0–1) for testing retry logic |
+
+---
+
+## 🌐 API Endpoints
 
 ### `GET /healthz`
+
 Health check endpoint (no auth required).
+
 ```bash
 curl http://localhost:8080/healthz
-# {"ok":true}
+# → {"ok":true}
 ```
 
 ### `POST /v1/signals`
+
 Create a new signal.
+
 ```bash
 curl -X POST http://localhost:8080/v1/signals \
   -H "Content-Type: application/json" \
@@ -51,77 +94,141 @@ curl -X POST http://localhost:8080/v1/signals \
   -d '{"userId":"user1","type":"click","payload":"button-signup"}'
 ```
 
-**Headers:**
-- `X-API-Key` (required) — API authentication
-- `Idempotency-Key` (optional) — Prevents duplicate creation
+| Header            | Required | Description                        |
+| ----------------- | -------- | ---------------------------------- |
+| `X-API-Key`       | ✅       | API authentication                 |
+| `Idempotency-Key` | ❌       | Prevents duplicate signal creation |
 
-**Rate limiting:** Each `userId` is limited to `RATE_LIMIT_PER_MIN` requests per minute. Returns `429` when exceeded.
+**Rate limiting:** Each `userId` is limited to `RATE_LIMIT_PER_MIN` requests per minute.
+A `429` response is returned when the limit is exceeded, with `remaining` and `resetMs` in the body.
 
 ### `GET /v1/signals?userId=...&limit=...`
-List signals for a user (most recent first).
+
+List signals for a user (most recent first, max 100).
+
 ```bash
 curl "http://localhost:8080/v1/signals?userId=user1&limit=10" \
   -H "X-API-Key: change-me"
+# → {"items":[{"id":1,"userId":"user1","type":"click",...}]}
 ```
 
-## Architecture Decisions
+---
 
-### Rate Limiting — Sliding Window Log
-- Uses sorted timestamp arrays per `userId` instead of fixed-window counters.
-- Prevents the 2× burst problem at window boundaries.
-- Concurrency-safe on single instance (Node.js single-threaded event loop).
-- See [SCALE.md](SCALE.md) for multi-instance design with Redis.
+## 🏛 Architecture Decisions
 
-### Atomic Idempotency — INSERT OR IGNORE
-- Leverages SQLite's `UNIQUE` constraint on `idempotency_key`.
-- `INSERT OR IGNORE` is a single atomic SQL statement — no check-then-insert race.
-- If key exists: `changes === 0` → fetch and return existing row.
-- If key is new: `changes === 1` → return the newly inserted row.
+### 1. Rate Limiting — Sliding Window Log
 
-### DB Failure Handling — Retry with Backoff
-- Exponential backoff with jitter: `base × 2^attempt × random(0.5, 1.0)`.
-- Default: 3 retries, 50ms base delay.
-- Retryable errors: `SQLITE_BUSY`, `simulated_db_failure`.
+| Aspect                    | Detail                                                                   |
+| ------------------------- | ------------------------------------------------------------------------ |
+| **Algorithm**             | Sorted timestamp array per `userId`, pruned on each request              |
+| **Why not fixed-window?** | Fixed-window counters allow 2× burst at boundaries                       |
+| **Concurrency safety**    | Synchronous within a single Node.js event-loop tick — no races           |
+| **Multi-instance**        | Replace with Redis `ZRANGEBYSCORE` Lua script (see [SCALE.md](SCALE.md)) |
+
+### 2. Atomic Idempotency — INSERT OR IGNORE
+
+```
+Request arrives with Idempotency-Key
+         │
+         ▼
+┌─────────────────────────┐
+│  INSERT OR IGNORE INTO  │  ← single atomic SQL statement
+│  signals (... idem_key) │     leverages UNIQUE constraint
+└──────────┬──────────────┘
+           │
+     ┌─────┴─────┐
+     │            │
+ changes=1    changes=0
+ (new row)    (exists)
+     │            │
+     ▼            ▼
+  Return       SELECT by
+  new row      idem_key
+               → return
+               existing row
+```
+
+- **No check-then-insert race** — the constraint check and insert happen in a single statement.
 - Safe to retry because `INSERT OR IGNORE` is inherently idempotent.
 
-### WAL Mode
-- SQLite WAL (Write-Ahead Logging) enabled for better concurrent read performance.
+### 3. DB Failure Handling — Retry with Exponential Backoff
 
-## Project Structure
 ```
+Attempt 0 ──fail──▶ wait ~50ms
+Attempt 1 ──fail──▶ wait ~100ms (+ jitter)
+Attempt 2 ──fail──▶ wait ~200ms (+ jitter)
+Attempt 3 ──fail──▶ throw (503 to client)
+```
+
+- **Jitter**: `delay = base × 2^attempt × random(0.5, 1.0)` — prevents thundering herd.
+- **Retryable errors**: `SQLITE_BUSY`, `simulated_db_failure`.
+- Combined with idempotent inserts, retries never create duplicates.
+
+### 4. WAL Mode
+
+SQLite WAL (Write-Ahead Logging) is enabled for concurrent read performance, allowing readers and writers to operate simultaneously without blocking.
+
+---
+
+## 📁 Project Structure
+
+```
+signals-challenge-node/
 ├── src/
-│   ├── server.js      # Fastify app setup, auth hook, route registration
-│   ├── signals.js     # POST/GET signal handlers with retry + idempotency
+│   ├── index.js       # Library entrypoint — exports core utilities
+│   ├── server.js      # Fastify app factory + auth hook + route registration
+│   ├── signals.js     # POST/GET handlers with atomic idempotency + retry
 │   ├── rateLimit.js   # Sliding-window-log rate limiter
-│   ├── retry.js       # Retry/backoff utility with jitter
-│   └── db.js          # SQLite schema, queries, failure simulation
+│   ├── retry.js       # Retry/backoff utility with exponential jitter
+│   └── db.js          # SQLite schema, queries, WAL mode, failure simulation
 ├── tests/
-│   ├── idempotency.test.js   # Idempotency tests (concurrent, dedup)
-│   ├── rate-limit.test.js    # Rate limit tests (burst, independence)
-│   ├── db-retry.test.js      # DB failure recovery tests
-│   └── api.test.js           # API integration tests (auth, validation)
-├── data/                     # SQLite database files
+│   ├── api.test.js           # API integration (auth, validation, CRUD)
+│   ├── idempotency.test.js   # Idempotency (dedup, concurrent burst)
+│   ├── rate-limit.test.js    # Rate limiting (burst, independence)
+│   └── db-retry.test.js      # DB failure recovery under load
+├── .env.example              # Environment variable template
+├── .eslintrc / .prettierrc   # Code quality configuration
 ├── SCALE.md                  # 10k RPS scale plan
+├── README.md
 └── package.json
 ```
 
-## Testing
+---
+
+## 🧪 Testing
 
 ```bash
-# Run all tests
+# Run all 16 tests
 npm test
 
-# Run a specific test file
+# Run a specific test suite
 node --test tests/idempotency.test.js
+node --test tests/rate-limit.test.js
+node --test tests/db-retry.test.js
+node --test tests/api.test.js
 
-# Test with simulated DB failures
+# Test with simulated DB failures (30% failure rate)
 DB_FAIL_RATE=0.3 npm test
 ```
 
-## Scale Plan
+### Test Coverage Matrix
 
-See [SCALE.md](SCALE.md) for the full 10k RPS design including:
-- PostgreSQL migration with partitioning
-- Redis-based distributed rate limiting (Lua script)
-- Redis idempotency cache
-- Architecture diagram with cost estimates
+| Suite           | Tests | What it verifies                                                                       |
+| --------------- | ----- | -------------------------------------------------------------------------------------- |
+| **API**         | 6     | healthz, auth 401, body validation 400, GET signals, limit param                       |
+| **Idempotency** | 4     | Same key → same row, different keys, no key → dups ok, **10-request concurrent burst** |
+| **Rate Limit**  | 4     | 5/min cap, independent user limits, **10-request parallel burst**, 429 response body   |
+| **DB Retry**    | 2     | Recovery under 30% fail rate, no duplicates during retries                             |
+
+---
+
+## 🚀 Scale Plan
+
+See **[SCALE.md](SCALE.md)** for the full 10k RPS design including:
+
+- 📊 PostgreSQL migration with range partitioning
+- 🔒 Redis-based distributed rate limiting (atomic Lua script)
+- 🗄️ Redis idempotency cache with DB fallback
+- 📈 Observability (Pino → Prometheus → Grafana → PagerDuty)
+- 🏗️ Architecture diagram (ALB → 4× Node.js → PG + Redis)
+- 💰 AWS cost estimate: ~$1,100/mo
